@@ -1,11 +1,110 @@
 [
   {
-    "name": "example",
-    "title": "TODO(author): the first document this industry must produce",
-    "for_each": "select gen_random_uuid() as id, 'Example' as name",
+    "name": "renewal-summary-letter",
+    "title": "Renewal summary",
+    "for_each": "select p.id, (p.policy_no || ' ' || c.name) as name from policies p join clients c on c.id = p.client_id where p.status in ('in force', 'bound') and p.expiry_on between current_date - 14 and current_date + 60 order by p.expiry_on",
     "file": "name",
     "sections": [
-      { "title": "Details", "sql": "select 'replace me' as item, $1::text as record_id" }
+      {
+        "title": "The policy",
+        "sql": "select c.name as client, coalesce(ct.full_name, '') as attention, p.policy_no as policy_number, p.class, coalesce(i.name, 'not placed') as insurer, coalesce(p.insurer_ref, '') as insurer_reference, p.inception_on as inception, p.expiry_on as expiry, (p.expiry_on - current_date) || ' days' as time_to_expiry, coalesce(b.full_name, 'unassigned') as your_broker from policies p join clients c on c.id = p.client_id left join contacts ct on ct.client_id = c.id and ct.is_primary left join insurers i on i.id = p.insurer_id left join brokers b on b.id = p.broker_id where p.id = $1"
+      },
+      {
+        "title": "What is covered",
+        "note": "Sums insured and excesses as they stand at expiry. Check every one against what the business looks like now.",
+        "sql": "select section, coalesce(description, '') as description, to_char(sum_insured_cents / 100.0, 'FM$999,999,999,990') as sum_insured, to_char(excess_cents / 100.0, 'FM$999,999,990.00') as excess, coalesce(limit_note, '') as basis from covers where policy_id = $1 order by sum_insured_cents desc"
+      },
+      {
+        "title": "The premium you are paying now",
+        "sql": "select to_char(base_premium_cents / 100.0, 'FM$999,999,990.00') as base_premium, to_char(levies_cents / 100.0, 'FM$999,999,990.00') as levies, to_char(gst_cents / 100.0, 'FM$999,999,990.00') as gst, to_char(gross_premium_cents / 100.0, 'FM$999,999,990.00') as total, payment_method as paid_by, coalesce(funder, '') as funder, brokerage_pct || '%' as brokerage_rate, to_char(brokerage_cents / 100.0, 'FM$999,999,990.00') as brokerage_we_earn, to_char(broker_fee_cents / 100.0, 'FM$999,999,990.00') as broker_fee from policies where id = $1"
+      },
+      {
+        "title": "What changed during the year",
+        "sql": "select endorsement_no as endorsement, effective_on as effective, kind, description as what_changed, status, to_char(premium_adjustment_cents / 100.0, 'FM$999,999,990.00') as premium_change from endorsements where policy_id = $1 order by effective_on"
+      },
+      {
+        "title": "Claims on this policy",
+        "note": "Claims history is what the underwriter prices on. Everything here is going to the market with the submission.",
+        "sql": "select claim_no as claim, loss_on as date_of_loss, description, status, to_char(reserve_cents / 100.0, 'FM$999,999,990') as reserve, to_char(settled_cents / 100.0, 'FM$999,999,990') as settled, coalesce(to_char(closed_on, 'YYYY-MM-DD'), 'open') as closed from claims where policy_id = $1 order by loss_on desc"
+      },
+      {
+        "title": "Terms in the market",
+        "sql": "select coalesce(q.quote_ref, '') as reference, coalesce(i.name, '') as market, q.status, q.requested_on as asked, coalesce(to_char(q.received_on, 'YYYY-MM-DD'), 'not back') as received, case when q.premium_cents > 0 then to_char(q.premium_cents / 100.0, 'FM$999,999,990.00') else '' end as premium, coalesce(q.terms, '') as terms, coalesce(q.decline_reason, q.lost_reason, '') as outcome from quotes q left join insurers i on i.id = q.insurer_id where q.policy_id = $1 order by q.requested_on desc"
+      },
+      {
+        "title": "Where the renewal has got to",
+        "sql": "select r.stage, r.due_on as due, coalesce(to_char(r.invited_on, 'YYYY-MM-DD'), 'not started') as review_opened, coalesce(to_char(r.client_contacted_on, 'YYYY-MM-DD'), 'NOT YET') as client_contacted, coalesce(to_char(r.terms_due_on, 'YYYY-MM-DD'), '') as terms_due, coalesce(to_char(r.presented_on, 'YYYY-MM-DD'), '') as presented, case when r.premium_offered_cents > 0 then to_char(r.premium_offered_cents / 100.0, 'FM$999,999,990.00') else '' end as premium_offered, coalesce(r.notes, '') as notes from renewals r where r.policy_id = $1"
+      },
+      {
+        "title": "Still to do before expiry",
+        "sql": "select coalesce(to_char(due_on, 'YYYY-MM-DD'), '') as due, title as what, kind, status from tasks where policy_id = $1 and status = 'open' order by due_on"
+      }
+    ]
+  },
+  {
+    "name": "client-portfolio-schedule",
+    "title": "Insurance portfolio schedule",
+    "for_each": "select c.id, c.name from clients c where c.status = 'active' and exists (select 1 from policies p where p.client_id = c.id and p.status = 'in force') order by c.name",
+    "file": "name",
+    "sections": [
+      {
+        "title": "The client",
+        "sql": "select c.name as client, coalesce(c.trading_name, '') as trading_as, coalesce(c.company_no, '') as company_number, coalesce(c.industry, '') as industry, coalesce(c.address, '') || case when c.suburb is null then '' else ', ' || c.suburb end || case when c.city is null then '' else ', ' || c.city end as address, coalesce(b.full_name, 'unassigned') as your_broker, coalesce(to_char(c.engagement_signed_on, 'YYYY-MM-DD'), 'NOT ON FILE') as terms_of_engagement_signed, coalesce(to_char(c.client_since, 'YYYY-MM-DD'), '') as client_since from clients c left join brokers b on b.id = c.broker_id where c.id = $1"
+      },
+      {
+        "title": "Every policy in force",
+        "sql": "select p.policy_no as policy, p.class, coalesce(i.name, '') as insurer, coalesce(p.insurer_ref, '') as insurer_reference, p.inception_on as from_date, p.expiry_on as to_date, to_char(p.sum_insured_cents / 100.0, 'FM$999,999,999,990') as sum_insured, to_char(p.excess_cents / 100.0, 'FM$999,999,990.00') as excess, to_char(p.gross_premium_cents / 100.0, 'FM$999,999,990.00') as premium, p.payment_method as paid_by from policies p left join insurers i on i.id = p.insurer_id where p.client_id = $1 and p.status = 'in force' order by p.expiry_on"
+      },
+      {
+        "title": "Sections and limits",
+        "sql": "select p.policy_no as policy, cv.section, coalesce(cv.description, '') as description, to_char(cv.sum_insured_cents / 100.0, 'FM$999,999,999,990') as sum_insured, to_char(cv.excess_cents / 100.0, 'FM$999,999,990.00') as excess, coalesce(cv.limit_note, '') as basis from covers cv join policies p on p.id = cv.policy_id where p.client_id = $1 and p.status = 'in force' order by p.policy_no, cv.sum_insured_cents desc"
+      },
+      {
+        "title": "What you pay and what we earn",
+        "note": "Remuneration disclosure. Insurance Brokers Code of Practice 2022, clause 6.1.",
+        "sql": "select count(*) as policies, to_char(sum(base_premium_cents) / 100.0, 'FM$999,999,990.00') as base_premium, to_char(sum(levies_cents) / 100.0, 'FM$999,999,990.00') as levies, to_char(sum(gst_cents) / 100.0, 'FM$999,999,990.00') as gst, to_char(sum(gross_premium_cents) / 100.0, 'FM$999,999,990.00') as total_you_pay, to_char(sum(brokerage_cents) / 100.0, 'FM$999,999,990.00') as brokerage_we_receive, to_char(sum(broker_fee_cents) / 100.0, 'FM$999,999,990.00') as broker_fees_you_pay_us from policies where client_id = $1 and status = 'in force'"
+      },
+      {
+        "title": "Claims in the last three years",
+        "sql": "select cl.claim_no as claim, p.policy_no as policy, cl.loss_on as date_of_loss, cl.description, cl.status, to_char(cl.settled_cents / 100.0, 'FM$999,999,990') as settled, coalesce(to_char(cl.closed_on, 'YYYY-MM-DD'), 'open') as closed from claims cl join policies p on p.id = cl.policy_id where cl.client_id = $1 and cl.notified_on >= current_date - 1095 order by cl.loss_on desc"
+      },
+      {
+        "title": "The advice behind the programme",
+        "sql": "select a.given_on as given, coalesce(p.policy_no, '') as policy, a.method as how, coalesce(a.nature_and_scope, 'NOT RECORDED') as scope, coalesce(a.recommendation, '') as recommendation, coalesce(a.reasons, '') as why, case when a.remuneration_disclosed then 'disclosed' else 'NOT DISCLOSED' end as remuneration from advice_records a left join policies p on p.id = a.policy_id where a.client_id = $1 order by a.given_on desc"
+      },
+      {
+        "title": "What is not covered here",
+        "note": "Read with the limitations recorded on each piece of advice. Cover not listed above is cover you do not have through us.",
+        "sql": "select coalesce(p.policy_no, '') as policy, coalesce(a.limitations, 'none recorded') as limitations, coalesce(a.risks_disclosed, '') as risks_we_told_you_about from advice_records a left join policies p on p.id = a.policy_id where a.client_id = $1 and coalesce(a.limitations, a.risks_disclosed) is not null order by a.given_on desc"
+      }
+    ]
+  },
+  {
+    "name": "claim-status-update",
+    "title": "Claim status update",
+    "for_each": "select cl.id, (cl.claim_no || ' ' || c.name) as name from claims cl join clients c on c.id = cl.client_id where cl.closed_on is null and cl.status <> 'withdrawn' order by cl.notified_on",
+    "file": "name",
+    "sections": [
+      {
+        "title": "The claim",
+        "sql": "select c.name as client, cl.claim_no as our_reference, coalesce(cl.insurer_claim_ref, 'not issued yet') as insurer_reference, p.policy_no as policy, cl.class, coalesce(i.name, '') as insurer, cl.loss_on as date_of_loss, cl.notified_on as notified, (current_date - cl.notified_on) || ' days' as open_for, cl.status, coalesce(b.full_name, 'unassigned') as your_claims_broker from claims cl join clients c on c.id = cl.client_id join policies p on p.id = cl.policy_id left join insurers i on i.id = cl.insurer_id left join brokers b on b.id = cl.broker_id where cl.id = $1"
+      },
+      {
+        "title": "What happened",
+        "sql": "select description as circumstances, to_char(reserve_cents / 100.0, 'FM$999,999,990.00') as current_reserve, to_char(excess_cents / 100.0, 'FM$999,999,990.00') as your_excess, case when settled_cents > 0 then to_char(settled_cents / 100.0, 'FM$999,999,990.00') else 'not settled' end as settled, coalesce(notes, '') as notes from claims where id = $1"
+      },
+      {
+        "title": "Everything that has happened since",
+        "sql": "select happened_on as date, kind as step, coalesce(actor, '') as who, coalesce(note, '') as detail from claim_events where claim_id = $1 order by happened_on desc, created_at desc"
+      },
+      {
+        "title": "What we are waiting on",
+        "sql": "select coalesce(to_char(due_on, 'YYYY-MM-DD'), '') as due, title as what, coalesce(note, '') as detail from tasks where claim_id = $1 and status = 'open' order by due_on"
+      },
+      {
+        "title": "The cover this sits under",
+        "sql": "select cv.section, coalesce(cv.description, '') as description, to_char(cv.sum_insured_cents / 100.0, 'FM$999,999,999,990') as sum_insured, to_char(cv.excess_cents / 100.0, 'FM$999,999,990.00') as excess, coalesce(cv.limit_note, '') as basis from covers cv join claims cl on cl.policy_id = cv.policy_id where cl.id = $1 order by cv.sum_insured_cents desc"
+      }
     ]
   }
 ]

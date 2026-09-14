@@ -1,13 +1,64 @@
 [
   {
     "name": "week",
-    "title": "This week",
-    "subtitle": "Broking for Claude Code: what needs attention, rendered by npm run view",
+    "title": "The week",
+    "subtitle": "Broking for Claude Code: what is expiring, what is stuck, and what the market owes us. Rendered by npm run view.",
     "sections": [
       {
-        "title": "Needs attention",
-        "note": "TODO(author): point this at the industry's attention view (overdue, stuck, quiet).",
-        "sql": "select 'replace me' as item, 'TODO(author)' as why"
+        "title": "Needs a decision",
+        "note": "Expired cover, renewals nobody has started, claims where the client has heard nothing, changes the insurer has not confirmed, complaints past thirty days.",
+        "sql": "select case reason when 'renewal_expired' then 'Expired and still on the book' when 'renewal_no_contact' then 'Renewal inside 30 days, no client contact' when 'claim_no_update' then 'Claim, client not told' when 'claim_not_acknowledged' then 'Claim never acknowledged' when 'endorsement_unconfirmed' then 'Cover change not confirmed' when 'complaint_overdue' then 'Complaint past 30 days' when 'advice_missing' then 'Placed with no advice record' when 'remuneration_not_disclosed' then 'No remuneration disclosure' when 'renewal_stuck' then 'Renewal stuck in market' when 'quote_chase' then 'Quote the market owes us' when 'task_overdue' then 'Task overdue' when 'commission_unreconciled' then 'Brokerage never reconciled' when 'client_quiet' then 'Client nobody has spoken to' else reason end as what, label as record, client, broker, days, case when amount_cents > 0 then to_char(amount_cents / 100.0, 'FM$999,999,990') else '' end as value, detail from v_attention_due order by case reason when 'renewal_expired' then 1 when 'renewal_no_contact' then 2 when 'claim_no_update' then 3 when 'claim_not_acknowledged' then 4 when 'endorsement_unconfirmed' then 5 when 'complaint_overdue' then 6 when 'advice_missing' then 7 when 'remuneration_not_disclosed' then 8 when 'renewal_stuck' then 9 when 'quote_chase' then 10 when 'task_overdue' then 11 when 'commission_unreconciled' then 12 else 13 end, days desc"
+      },
+      {
+        "title": "Renewals inside thirty days",
+        "note": "The Insurance Brokers Code of Practice wants the client contacted at least fourteen days before expiry (clause 7.2(a)).",
+        "sql": "select policy_no as policy, client, class, insurer, expiry_on as expires, case when days_to_expiry < 0 then (-days_to_expiry) || ' days ago' else days_to_expiry || ' days' end as due, stage, coalesce(days_since_contact || ' days ago', 'NEVER') as client_spoken_to, quotes, to_char(gross_premium_cents / 100.0, 'FM$999,999,990') as premium, to_char(brokerage_cents / 100.0, 'FM$999,999,990') as brokerage, broker from v_renewals_due where days_to_expiry <= 30 order by days_to_expiry"
+      },
+      {
+        "title": "Open claims",
+        "sql": "select claim_no as claim, client, class, status, days_open || 'd' as open_for, days_since_client_update || 'd ago' as client_last_told, to_char(reserve_cents / 100.0, 'FM$999,999,990') as reserve, to_char(excess_cents / 100.0, 'FM$999,990.00') as excess, insurer, insurer_ref, broker from v_claims_open order by days_since_client_update desc"
+      },
+      {
+        "title": "Out to market",
+        "note": "Quotes asked for and not yet back. A due date in the past is a phone call, not a wait.",
+        "sql": "select q.quote_ref as ref, c.name as client, q.class, coalesce(i.name, '') as market, q.purpose, q.requested_on as asked, q.due_on as due, case when q.due_on < current_date then (current_date - q.due_on) || ' days late' else 'in ' || (q.due_on - current_date) || ' days' end as position, coalesce(b.full_name, '') as broker from quotes q join clients c on c.id = q.client_id left join insurers i on i.id = q.insurer_id left join brokers b on b.id = q.broker_id where q.status = 'requested' order by q.due_on"
+      },
+      {
+        "title": "Cover changed and not confirmed",
+        "note": "An endorsement the insurer has not written back on is cover the client thinks they have.",
+        "sql": "select e.endorsement_no as number, c.name as client, p.policy_no as policy, e.kind, e.effective_on as effective, (current_date - e.requested_on) || ' days' as waiting, e.status, e.description as what_changed from endorsements e join policies p on p.id = e.policy_id join clients c on c.id = p.client_id where e.status in ('requested', 'with insurer') order by e.requested_on"
+      },
+      {
+        "title": "Brokerage, last six months",
+        "sql": "select month, entries, to_char(brokerage_cents / 100.0, 'FM$999,999,990') as brokerage, to_char(fees_cents / 100.0, 'FM$999,999,990') as broker_fees, to_char(endorsement_cents / 100.0, 'FM$999,999,990') as endorsements, to_char(total_cents / 100.0, 'FM$999,999,990') as total, to_char(received_cents / 100.0, 'FM$999,999,990') as received, to_char(accrued_cents / 100.0, 'FM$999,999,990') as still_accrued from v_commission_month order by period_month desc limit 6"
+      }
+    ]
+  },
+  {
+    "name": "renewals",
+    "title": "The renewal cycle",
+    "subtitle": "Sixty, thirty, fourteen, expired. Every policy coming up and where it has got to. Rendered by npm run view.",
+    "sections": [
+      {
+        "title": "The cycle at a glance",
+        "sql": "select band, count(*) as policies, to_char(sum(gross_premium_cents) / 100.0, 'FM$999,999,990') as premium, to_char(sum(brokerage_cents) / 100.0, 'FM$999,999,990') as brokerage_at_risk, sum(case when client_contacted_on is null then 1 else 0 end) as no_client_contact, sum(case when stage = 'not started' then 1 else 0 end) as not_started, sum(case when open_claims > 0 then 1 else 0 end) as with_open_claims from v_renewals_due group by band order by case band when 'expired' then 1 when '14 day' then 2 when '30 day' then 3 when '60 day' then 4 else 5 end"
+      },
+      {
+        "title": "Every renewal inside ninety days",
+        "sql": "select policy_no as policy, client, class, insurer, expiry_on as expires, case when days_to_expiry < 0 then (-days_to_expiry) || ' days ago' else days_to_expiry || ' days' end as due, band, stage, coalesce(days_since_contact || 'd ago', 'NEVER') as spoken_to, quotes, open_claims, to_char(gross_premium_cents / 100.0, 'FM$999,999,990') as premium, case when premium_offered_cents > 0 then to_char(premium_offered_cents / 100.0, 'FM$999,999,990') else '' end as offered, payment_method, broker from v_renewals_due order by days_to_expiry"
+      },
+      {
+        "title": "Nobody has spoken to these clients",
+        "note": "Insurance Brokers Code of Practice 2022, clause 7.2(a): contact the client well before, and at least fourteen days prior to, the expiry date.",
+        "sql": "select policy_no as policy, client, class, expiry_on as expires, days_to_expiry || ' days' as due, stage, to_char(gross_premium_cents / 100.0, 'FM$999,999,990') as premium, broker from v_renewals_due where client_contacted_on is null and days_to_expiry >= 0 order by days_to_expiry"
+      },
+      {
+        "title": "Renewal stages in flight",
+        "sql": "select r.stage, count(*) as renewals, to_char(sum(p.gross_premium_cents) / 100.0, 'FM$999,999,990') as premium, min(p.expiry_on) as soonest_expiry, sum(case when r.terms_due_on < current_date and r.stage in ('in market', 'reviewing') then 1 else 0 end) as past_terms_date from renewals r join policies p on p.id = r.policy_id where r.closed_on is null group by r.stage order by count(*) desc"
+      },
+      {
+        "title": "Where the book sits by class",
+        "sql": "select p.class, count(*) as policies, count(distinct p.client_id) as clients, to_char(sum(p.gross_premium_cents) / 100.0, 'FM$999,999,990') as premium, to_char(sum(p.brokerage_cents + p.broker_fee_cents) / 100.0, 'FM$999,999,990') as brokerage, round(avg(p.brokerage_pct), 1) || '%' as average_rate, sum(case when p.expiry_on <= current_date + 90 then 1 else 0 end) as due_in_90_days from policies p where p.status = 'in force' group by p.class order by sum(p.gross_premium_cents) desc"
       }
     ]
   }
